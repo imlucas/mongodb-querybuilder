@@ -1,0 +1,25 @@
+{
+  "name": "mongodb-querybuilder",
+  "description": "A wrapper of queries and aggregation calls to MongoDB via the mongoscope client",
+  "version": "0.0.1",
+  "author": "Thomas Rueckstiess <thomas@rueckstiess.net>",
+  "license": "Apache",
+  "homepage": "http://github.com/rueckstiess/mongodb-querybuilder",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/rueckstiess/mongodb-querybuilder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rueckstiess/mongodb-querybuilder/issues"
+  },
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mongodb",
+    "query",
+    "builder",
+    "aggregation"
+  ]
+}
