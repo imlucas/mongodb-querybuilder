@@ -7,7 +7,7 @@
   "homepage": "http://github.com/rueckstiess/mongodb-querybuilder",
   "dependencies": {
     "backbone": "^1.1.2",
-    "mongodb-schema": "^0.x",
+    "mongodb-schema": ">=0.0.4",
     "mongoscope-client": "^0.1.2",
     "underscore": "^1.6.0"
   },
