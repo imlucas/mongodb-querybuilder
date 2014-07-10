@@ -5,6 +5,12 @@
   "author": "Thomas Rueckstiess <thomas@rueckstiess.net>",
   "license": "Apache",
   "homepage": "http://github.com/rueckstiess/mongodb-querybuilder",
+  "dependencies": {
+    "backbone": "^1.1.2",
+    "mongodb-schema": "^0.x",
+    "mongoscope-client": "^0.1.2",
+    "underscore": "^1.6.0"
+  },
   "repository": {
     "type": "git",
     "url": "git://github.com/rueckstiess/mongodb-querybuilder.git"
