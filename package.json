@@ -1,7 +1,7 @@
 {
   "name": "mongodb-querybuilder",
   "description": "A wrapper of queries and aggregation calls to MongoDB via the mongoscope client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "author": "Thomas Rueckstiess <thomas@rueckstiess.net>",
   "license": "Apache",
   "homepage": "http://github.com/rueckstiess/mongodb-querybuilder",
