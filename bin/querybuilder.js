@@ -35,6 +35,9 @@ QueryBuilder.prototype.reset = function () {
     this._group = null;
     this._unwind = [];
     this._pick = {};
+
+    this._picked = false;
+    this._grouped = false;
 };
 
 QueryBuilder.prototype.match = function(field, values) {
@@ -51,6 +54,7 @@ QueryBuilder.prototype.match = function(field, values) {
 };
 
 QueryBuilder.prototype.pick = function(slot, path) {
+    this._picked = true;
     if (!path) {
         delete this._pick[slot];
     } else {
@@ -60,6 +64,8 @@ QueryBuilder.prototype.pick = function(slot, path) {
 };
 
 QueryBuilder.prototype.agg = function(slot, agg, path) {
+    this._grouped = true;
+
     var doc = {};
     doc[agg] = path;
     this._aggs[slot] = doc;
@@ -78,6 +84,8 @@ QueryBuilder.prototype.sort = function(slot, direction) {
 };
 
 QueryBuilder.prototype.group = function(slot, fields) {
+    this._grouped = true;
+
     if (!fields) {
         this._group = null;
         return this;
@@ -133,6 +141,11 @@ QueryBuilder.prototype.end = function(callback) {
     function inner() {
         var _this = this;
 
+        // sanity check
+        if (this._grouped && this._picked) {
+            throw Error("can't use .pick() and .group() / .agg() together.");
+        }
+
         // match
         match = {};
         for (field in this._match) {
@@ -159,12 +172,6 @@ QueryBuilder.prototype.end = function(callback) {
         
         // group and aggs
         if (this._group) {
-
-            // make sure nothing is picked, that's incompatible with group
-            if (this._pick) {
-                throw Error("Can't use .pick() and .group() together.");
-            }
-
             // project group fields (because dot-notation is not allowed in sub docs)
             var slots = this._group['fields'].slice(0);
             for (agg in this._aggs) {
@@ -232,7 +239,7 @@ QueryBuilder.prototype.end = function(callback) {
 
         } else {
 
-            project = [];
+            project = {};
             group = null;
             rename = null;
 
@@ -250,8 +257,8 @@ QueryBuilder.prototype.end = function(callback) {
                 project[slot] = '$' + value;
             }
             project = {$project: project};
+            console.log("PROJECT", project);
         }
-
 
         // unwind
         unwind = this._unwind;
@@ -266,7 +273,6 @@ QueryBuilder.prototype.end = function(callback) {
          
         // limit   
         var limit = [ {$limit: this._limit} ];
-
 
 
         // === assembling the pipeline ===
