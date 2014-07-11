@@ -4,16 +4,19 @@ var QueryBuilder = module.exports = require('./lib/mongodb-querybuilder.js');
 var builder = new QueryBuilder({namespace: "xgen.jira", seed: "mongodb://localhost:10000"});
 
 builder
-    .match( {"fields.reporter.name": "thomasr"} )
+    .match("fields.reporter.name", ["thomasr", "ramon.fernandez"])
+
+    .match("fields.components.name", "Sharding")
+    .match("changelog.total", [10, 50])
+    
     .group("x-axis", "fields.fixVersions.name")
-    .agg("y-axis", "$sum", 1)
-    .agg("ids", "$push", "$_id")
-    .sort("watchers", 1)
+        .agg("y-axis", "$sum", 1)
+        .agg("ids", "$push", "$_id")
     .limit(5);
 
-builder.exec(function (err, res) {
+builder.end(function (err, res) {
     if (err) return console.log("ERROR", err);
-    console.log("SUCCESS", JSON.stringify(res, null, '\t'));
+    console.log("DATA", JSON.stringify(res, null, '\t'));
 });
 
 },{"./lib/mongodb-querybuilder.js":2}],2:[function(require,module,exports){
@@ -52,8 +55,16 @@ QueryBuilder.prototype.reset = function () {
     this._unwind = [];
 };
 
-QueryBuilder.prototype.match = function(matchobj) {
-    this._match = matchobj;
+QueryBuilder.prototype.match = function(field, values) {
+
+    if (!values) {
+        delete this._match[field];
+    } else {
+        if (!(values instanceof Array)) {
+            values = [ values ];
+        }      
+        this._match[field] = values;
+    }
     return this;
 };
 
@@ -76,11 +87,23 @@ QueryBuilder.prototype.sort = function(slot, direction) {
 };
 
 QueryBuilder.prototype.group = function(slot, fields) {
+    if (!fields) {
+        this._group = null;
+        return this;
+    }
+
     if (!(fields instanceof Array)) {
         fields = [ fields ];
     } 
-    this._group = fields;
+    this._group = {'slot': slot, 'fields': fields };
     return this;
+};
+
+QueryBuilder.prototype.schema = function(callback) {
+    function inner() {
+        callback(null, this._schema);
+    };
+    this._requireSchema(inner);
 };
 
 QueryBuilder.prototype._requireSchema = function(callback, args) {
@@ -114,35 +137,65 @@ QueryBuilder.prototype._unwinder = function(path) {
     }
 };
 
-QueryBuilder.prototype.exec = function(callback) {
+QueryBuilder.prototype.end = function(callback) {
 
     function inner() {
         var _this = this;
 
-        // wrap match with $match
-        var match = {$match: this._match};
+        // match
+        match = {};
+        for (field in this._match) {
+            if (!this._match.hasOwnProperty(field)) continue;
 
-        // project
-        // this._project = 
+            // strings are categories
+            if (this._schema[field]['$type'] === 'string') {
+                if (this._match[field].length === 1) {
+                    // single matches, no $in
+                    match[field] = this._match[field][0];
+                } else {
+                    // multiple matches, use $in
+                    match[field] = { $in: this._match[field] };
+                }
+            } else if (['number', 'date'].indexOf(this._schema[field]['$type']) !== -1) {
+                // console.log("QUANTITY")
+                // assume length is always 2 (min and max)
+                var min = this._match[field][0],
+                    max = this._match[field][1];
+
+                match[field] = { $gte: min, $lte: max };
+            }
+        }
+        match = {$match: match};
+
+        // // project
+        // var slots = this._group['fields'];
+        // for (agg in this._aggs) {
+        //     if (!this._aggs.hasOwnProperty(agg)) continue;
+        //     console.log("AGG", agg)
+        //     slots.push( this._aggs[agg][Object.keys(this.aggs[agg])[0]] );
+        // };
+        
+        // console.log("SLOTS", slots);
+        // this._project = [];
 
         // group and aggs
         if (this._group) {
-            if (this._group.length > 1) {
+            if (this._group['fields'].length > 1) {
                 // compound group key
                 var compound = {};
-                this._group.forEach(function (f) {
+                this._group['fields'].forEach(function (f) {
                     compound[f] = '$'+f;
                 });
                 var group = { _id: compound };
             } else {
                 // single group key
-                var group = { _id: '$'+this._group[0] };
+                var group = { _id: '$'+this._group['fields'][0] };
             }
 
             this._unwind = [];
             
             // unwind group field if necessary
-            this._group.forEach( _.bind(this._unwinder, this) );
+            this._group['fields'].forEach( _.bind(this._unwinder, this) );
 
             for (slot in this._aggs) {
                 if (!this._aggs.hasOwnProperty(slot)) continue;
@@ -169,6 +222,15 @@ QueryBuilder.prototype.exec = function(callback) {
         var limit = [ {$limit: this._limit} ];
         // }
 
+        // rename _id to the group slot
+        var rename = Object.keys(this._aggs).reduce(function (prev, curr) {
+            prev[curr] = '$' + curr;
+            return prev;
+        }, {});
+        rename[this._group['slot']] = '$_id';
+        rename['_id'] = 0;
+        rename = {'$project': rename};
+
         // combining it all
         var pipeline = [];
         pipeline = pipeline.concat(
@@ -177,8 +239,11 @@ QueryBuilder.prototype.exec = function(callback) {
             unwind,
             group,
             // sort,
-            limit
+            limit,
+            rename
         ).filter(function (f) { return f != null; });
+
+        console.log("PIPELINE", JSON.stringify(pipeline, null, '\t'));
 
         // executing the pipeline
         this._mongoscope.aggregate("xgen.jira", pipeline, callback);
