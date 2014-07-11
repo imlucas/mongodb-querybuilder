@@ -15,13 +15,14 @@ var builder = new QueryBuilder({seed: "mongodb://localhost:10000", namespace: "x
 // QueryBuilder will store the state according to the given "slot" (first), overwrite
 // old values, and delete the slot if you pass in a value of null.
 builder
-    .match("fields.reporter.name", ["thomasr", "ramon.fernandez"])
-    .match("fields.components.name", "Sharding")
+    .match("fields.reporter.name", ["thomasr", "ramon.fernandez", "spencer"])
+    .match("fields.components.name", ["Security", "Sharding"])
     .match("changelog.total", [10, 50])
     
-    .group("x-axis", "fields.fixVersions.name")
+    .group("x-axis", ["fields.fixVersions.name", "fields.status"])
         .agg("y-axis", "$sum", 1)
-        .agg("ids", "$push", "$_id")
+        .agg("size", "$avg", "changelog.total")
+        .agg("_ids", "$push", "_id")
 
     .limit(5);
 
