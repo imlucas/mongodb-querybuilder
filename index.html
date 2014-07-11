@@ -17,13 +17,18 @@ var builder = new QueryBuilder({seed: "mongodb://localhost:10000", namespace: "x
 builder
     .match("fields.reporter.name", ["thomasr", "ramon.fernandez", "spencer"])
     .match("fields.components.name", ["Security", "Sharding"])
-    .match("changelog.total", [10, 50])
-    
-    .group("x-axis", ["fields.fixVersions.name", "fields.status"])
-        .agg("y-axis", "$sum", 1)
-        .agg("size", "$avg", "changelog.total")
-        .agg("_ids", "$push", "_id")
+    .match("changelog.total", [0, 50])
 
+    // .group("x-axis", ["fields.fixVersions.name", "fields.status"])
+    //     .agg("y-axis", "$sum", 1)
+    //     .agg("size", "$avg", "changelog.total")
+    //     .agg("_ids", "$push", "_id")
+
+    .pick("x-axis", "fields.fixVersions.name")
+    .pick("y-axis", "changelog.total")
+    .pick("color", "fields.components.name")
+
+    .sort("size", -1)
     .limit(5);
 
 // finally, call .end to send the aggregation pipeline and return the data
@@ -35,3 +40,4 @@ builder.end(function (err, res) {
 
 </body>
 </html>
+

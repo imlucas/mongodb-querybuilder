@@ -9,8 +9,7 @@
     "backbone": "^1.1.2",
     "mongodb-schema": ">=0.0.4",
     "mongoscope-client": "^0.1.2",
-    "underscore": "^1.6.0",
-    "dot-object": "^0.3.0"
+    "underscore": "^1.6.0"
   },
   "repository": {
     "type": "git",

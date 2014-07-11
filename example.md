@@ -85,8 +85,7 @@ into that:
 
 Which one would you rather write?
 
-
-By the way, the result of that aggregation pipeline looks like this:
+The result of that aggregation pipeline looks like this:
 
 ```json
 [

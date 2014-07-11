@@ -1,16 +1,13 @@
 !function(e){if("object"==typeof exports&&"undefined"!=typeof module)module.exports=e();else if("function"==typeof define&&define.amd)define([],e);else{var f;"undefined"!=typeof window?f=window:"undefined"!=typeof global?f=global:"undefined"!=typeof self&&(f=self),f.QueryBuilder=e()}}(function(){var define,module,exports;return (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(_dereq_,module,exports){
 var QueryBuilder = module.exports = _dereq_('./lib/mongodb-querybuilder.js');
 },{"./lib/mongodb-querybuilder.js":2}],2:[function(_dereq_,module,exports){
-var DotObject = _dereq_('dot-object'),
-            _ = _dereq_('underscore');
-
-var dotobject = new DotObject();
+var _ = _dereq_('underscore');
 
 var QueryBuilder = function(options) {
     options = options || {};
 
     this._namespace = _dereq_('mongodb-ns')(options.namespace);
-    this._mongoscope = _dereq_('mongoscope-client')({seed: options.seed || 'mongodb://localhost:10000'});
+    this._mongoscope = _dereq_('mongoscope-client')(options);
     this._schema = null;
 
     // get schema early on
@@ -37,6 +34,7 @@ QueryBuilder.prototype.reset = function () {
     this._sort = [];
     this._group = null;
     this._unwind = [];
+    this._pick = {};
 };
 
 QueryBuilder.prototype.match = function(field, values) {
@@ -48,6 +46,15 @@ QueryBuilder.prototype.match = function(field, values) {
             values = [ values ];
         }      
         this._match[field] = values;
+    }
+    return this;
+};
+
+QueryBuilder.prototype.pick = function(slot, path) {
+    if (!path) {
+        delete this._pick[slot];
+    } else {
+        this._pick[slot] = path;
     }
     return this;
 };
@@ -66,7 +73,7 @@ QueryBuilder.prototype.limit = function(n) {
 };
 
 QueryBuilder.prototype.sort = function(slot, direction) {
-    this._sort = [slot, direction];
+    this._sort = {"slot": slot, "direction": direction};
     return this;
 };
 
@@ -141,7 +148,6 @@ QueryBuilder.prototype.end = function(callback) {
                     match[field] = { $in: this._match[field] };
                 }
             } else if (['number', 'date'].indexOf(this._schema[field]['$type']) !== -1) {
-                // console.log("QUANTITY")
                 // assume length is always 2 (min and max)
                 var min = this._match[field][0],
                     max = this._match[field][1];
@@ -150,25 +156,30 @@ QueryBuilder.prototype.end = function(callback) {
             }
         }
         match = {$match: match};
-
-        // project group fields (because dot-notation is not allowed in sub docs)
-        var slots = this._group['fields'].slice(0);
-        for (agg in this._aggs) {
-            if (!this._aggs.hasOwnProperty(agg)) continue;
-            slots.push( this._aggs[agg][Object.keys(this._aggs[agg])[0]] );
-        };
-
-        // build project object
-        slots = slots.filter(function (s) { return (typeof s === 'string'); });
-        var project = slots.reduce(function (prev, curr) {
-            prev[curr.replace(/\./g, '_')] = '$' + curr;
-            return prev;
-        }, {});
-        project = {$project: project};
-
         
         // group and aggs
         if (this._group) {
+
+            // make sure nothing is picked, that's incompatible with group
+            if (this._pick) {
+                throw Error("Can't use .pick() and .group() together.");
+            }
+
+            // project group fields (because dot-notation is not allowed in sub docs)
+            var slots = this._group['fields'].slice(0);
+            for (agg in this._aggs) {
+                if (!this._aggs.hasOwnProperty(agg)) continue;
+                slots.push( this._aggs[agg][Object.keys(this._aggs[agg])[0]] );
+            };
+
+            // build project object
+            slots = slots.filter(function (s) { return (typeof s === 'string'); });
+            var project = slots.reduce(function (prev, curr) {
+                prev[curr.replace(/\./g, '_')] = '$' + curr;
+                return prev;
+            }, {});
+            project = {$project: project};
+
             
             if (this._group['fields'].length > 1) {
                 // prep for compound group key
@@ -176,15 +187,13 @@ QueryBuilder.prototype.end = function(callback) {
 
                 // build compound group key
                 this._group['fields'].forEach(function (f) {
-                    if (typeof f === 'string') {
-                        f = f.replace(/\./g, '_');
-                    }
+                    f = f.replace(/\./g, '_');
                     compound[f] = '$' + f;
                 });
                 var group = { _id: compound };
             } else {
                 // single group key
-                var group = { _id: '$'+this._group['fields'][0] };
+                var group = { _id: '$'+this._group['fields'][0].replace(/\./g, '_') };
             }
             
             // unwind group field if necessary
@@ -202,7 +211,6 @@ QueryBuilder.prototype.end = function(callback) {
                 this._unwinder.apply(this, [ value ]);
 
                 // add aggregations to group
-                console.log("AGGS", this._aggs[slot], fn, value);
                 var agg = {};
                 if (typeof value === 'string') {
                     value = '$' + value.replace(/\./g, '_');
@@ -211,50 +219,64 @@ QueryBuilder.prototype.end = function(callback) {
                 group[slot] = agg;
             }
             group = {$group: group};
-            unwind = this._unwind;
-        } 
 
-        // var sort = null;
-        // if (this._sort) {
-        //     // sort / limit
-        //     var s = this._sort;
-        //     var k = this._aggs[s[0]];
-        //     sort = {};
-        //     sort[k[Object.keys(k)[0]]] = k[1];
-            
+            // rename _id to the group slot
+            var rename = Object.keys(this._aggs).reduce(function (doc, curr) {
+                doc[curr] = '$' + curr;
+                return doc;
+            }, {});
+
+            rename[this._group['slot']] = '$_id';
+            rename['_id'] = 0;
+            rename = {'$project': rename};
+
+        } else {
+
+            project = [];
+            group = null;
+            rename = null;
+
+            // project picked values
+            for (slot in this._pick) {
+                if (!this._pick.hasOwnProperty(slot)) continue;
+
+                console.log("PICK", slot);
+                var value = this._pick[slot];
+
+                // unwind if necessary
+                this._unwinder.apply(this, [ value ]);
+
+                // then project
+                project[slot] = '$' + value;
+            }
+            project = {$project: project};
+        }
+
+
+        // unwind
+        unwind = this._unwind;
+
+        // sort
+        var sort = null;
+        if (this._sort) {
+            sort = {};
+            sort[this._sort['slot']] = this._sort['direction'];
+        }
+        sort = {$sort: sort};
+         
+        // limit   
         var limit = [ {$limit: this._limit} ];
-        // }
 
-        // rename _id to the group slot
-        var rename = Object.keys(this._aggs).reduce(function (doc, curr) {
-            doc[curr] = '$' + curr;
-            return doc;
-        }, {});
-        
-        // reconstruct the nested dotted fields
-        console.log("GROUP", this._group['fields']);
 
-        var _id = this._group['fields'].reduce(function (doc, curr) {
-            doc[curr] = '$_id.' + curr.replace(/\./g, '_');
-            return doc;
-        }, {});
 
-        console.log("_ID before", _id);
-        dotobject.object(_id);
-        console.log("_ID after", _id);
-        rename[this._group['slot']] = _id;
-
-        rename['_id'] = 0;
-        rename = {'$project': rename};
-
-        // combining it all
+        // === assembling the pipeline ===
         var pipeline = [];
         pipeline = pipeline.concat(
             match,
             unwind,
             project,
             group,
-            // sort,
+            sort,
             limit,
             rename
         ).filter(function (f) { return f !== null; });
@@ -271,198 +293,7 @@ QueryBuilder.prototype.end = function(callback) {
 
 module.exports = QueryBuilder;
 
-},{"dot-object":3,"mongodb-ns":4,"mongodb-schema":5,"mongoscope-client":7,"underscore":65}],3:[function(_dereq_,module,exports){
-'use strict';
-
-function DotObject(seperator, override) {
-
-  if(!(this instanceof DotObject)) return new DotObject(seperator, override);
-
-  if (typeof seperator === 'undefined') { seperator = '.'; }
-  if (typeof override === 'undefined') { override = false; }
-  this.seperator = seperator;
-  this.override = override;
-}
-
-DotObject.prototype._fill = function (a, obj, v, mod) {
-  var k = a.shift();
-
-  if (a.length > 0) {
-    obj[k] = obj[k] || {};
-
-    if (obj[k] !== Object(obj[k])) {
-      if (this.override) {
-        obj[k] = {};
-      } else {
-        throw new Error('Trying to redefine \'' + k + '\' which is a ' + typeof obj[k]);
-      }
-    }
-
-    this._fill(a, obj[k], v, mod);
-  } else {
-    if (obj[k] === Object(obj[k]) && Object.keys(obj[k]).length) {
-      throw new Error('Trying to redefine non-empty obj[\'' + k + '\']');
-    }
-
-    obj[k] = this.process(v, mod);
-  }
-};
-
-DotObject.prototype.process = function (v, mod) {
-  var i;
-
-  if (typeof mod === 'function') {
-    v = mod(v);
-  } else if (mod instanceof Array) {
-    for (i = 0; i < mod.length; i++) {
-      v = mod[i](v);
-    }
-  }
-
-  return v;
-};
-
-DotObject.prototype.object = function (obj, mods) {
-  var self = this;
-
-  Object.keys(obj).forEach(function (k, i) {
-    var mod = mods === undefined ? null : mods[k];
-
-    if (k.indexOf(self.seperator) !== -1) {
-      self._fill(k.split(self.seperator), obj, obj[k], mod);
-      delete obj[k];
-    } else if (self.override) {
-      obj[k] = self.process(obj[k], mod);
-    }
-  });
-};
-
-DotObject.prototype.str = function (str, v, obj, mod) {
-  if (str.indexOf(this.seperator) !== -1) {
-    this._fill(str.split(this.seperator), obj, v, mod);
-  } else if (this.override) {
-    obj[str] = this.process(v, mod);
-  }
-};
-
-/**
- *
- * Pick a value from an object using dot notation.
- *
- * Optionally remove the value
- *
- * @param {String} path
- * @param {Object} obj
- * @param {Boolean} remove
- */
-DotObject.prototype.pick = function (path, obj, remove) {
-  var i, keys, val;
-
-  if (path.indexOf(this.seperator) !== -1) {
-    keys = path.split(this.seperator);
-    for (i = 0; i < keys.length; i++) {
-      if(obj.hasOwnProperty(keys[i])) {
-        if(i === (keys.length - 1)) {
-          if(remove) {
-            val = obj[keys[i]];
-            delete obj[keys[i]];
-            return val;
-          } else {
-            return obj[keys[i]];
-          }
-        } else {
-          obj = obj[keys[i]];
-        }
-      } else {
-        return undefined;
-      }
-    }
-    return obj;
-  } else {
-    if(remove) {
-      val = obj[path];
-      delete obj[path];
-      return val;
-    } else {
-      return obj[path];
-    }
-  }
-};
-
-/**
- *
- * Move a property from one place to the other.
- *
- * If the source path does not exist (undefined)
- * the target property will not be set.
- *
- * @param {String} source
- * @param {String} target
- * @param {Object} obj
- *
- */
-DotObject.prototype.move = function (source, target, obj) {
-
-  this.set(target, this.pick(source, obj, true), obj);
-
-  return obj;
-
-};
-
-/**
- *
- * Transfer a property from one object to another object.
- *
- * If the source path does not exist (undefined)
- * the property on the other object will not be set.
- *
- * @param {String} source
- * @param {String} target
- * @param {Object} obj
- *
- */
-DotObject.prototype.transfer = function (source, target, obj1, obj2) {
-
-  this.set(target, this.pick(source, obj1, true), obj2);
-
-  return obj2;
-
-};
-
-/**
- *
- * Set a property on an object using dot notation.
- *
- */
-DotObject.prototype.set = function (path, val, obj) {
-  var i, keys;
-
-  // Do not operate if the value is undefined.
-  if(typeof val === 'undefined') return obj;
-
-  if (path.indexOf(this.seperator) !== -1) {
-    keys = path.split(this.seperator);
-    for (i = 0; i < keys.length; i++) {
-      if(i === (keys.length - 1)) {
-        obj[keys[i]] = val;
-      } else if(
-        // force the value to be an object
-        !obj.hasOwnProperty(keys[i]) ||
-        Object.prototype.toString.call(obj[keys[i]]) !== '[object Object]') {
-        obj[keys[i]] = {};
-      }
-      obj = obj[keys[i]];
-    }
-    return obj;
-  } else {
-    obj[path] = val;
-    return obj;
-  }
-};
-
-module.exports = DotObject;
-
-},{}],4:[function(_dereq_,module,exports){
+},{"mongodb-ns":3,"mongodb-schema":4,"mongoscope-client":6,"underscore":64}],3:[function(_dereq_,module,exports){
 var types = [
   'Command',
   'Special',
@@ -558,7 +389,7 @@ module.exports.sort = function(namespaces){
   return namespaces;
 };
 
-},{}],5:[function(_dereq_,module,exports){
+},{}],4:[function(_dereq_,module,exports){
 (function (process){
 var schema_sync = _dereq_('./lib/mongodb-schema.js');
 
@@ -584,7 +415,7 @@ var schema = function(documents, options, callback) {
 module.exports.schema = schema;
 module.exports.schema_sync = schema_sync;
 }).call(this,_dereq_("lppjwH"))
-},{"./lib/mongodb-schema.js":6,"lppjwH":74}],6:[function(_dereq_,module,exports){
+},{"./lib/mongodb-schema.js":5,"lppjwH":73}],5:[function(_dereq_,module,exports){
 /**
  * calculates schema of a collection by sampling some of the documents
  * 
@@ -897,7 +728,7 @@ if (typeof DBCollection !== 'undefined') {
 if (typeof module !== 'undefined') {
     module.exports = schema;
 }
-},{}],7:[function(_dereq_,module,exports){
+},{}],6:[function(_dereq_,module,exports){
 var Client = _dereq_('./lib/client'),
   pkg = _dereq_('./package.json');
 
@@ -913,7 +744,7 @@ module.exports = function(config){
 
 module.exports.version = pkg.version;
 
-},{"./lib/client":9,"./package.json":64}],8:[function(_dereq_,module,exports){
+},{"./lib/client":8,"./package.json":63}],7:[function(_dereq_,module,exports){
 var Client = _dereq_('../client'),
   assert = _dereq_('assert'),
   types = {
@@ -1086,7 +917,7 @@ module.exports.ReadableStream = {
 
 module.exports.clients = clients;
 
-},{"../client":9,"assert":66,"mongodb-ns":4,"mongodb-uri":17}],9:[function(_dereq_,module,exports){
+},{"../client":8,"assert":65,"mongodb-ns":3,"mongodb-uri":16}],8:[function(_dereq_,module,exports){
 (function (process){
 var request = _dereq_('superagent'),
   util = _dereq_('util'),
@@ -1876,7 +1707,7 @@ Client.prototype.onTokenError = function(err){
 };
 
 }).call(this,_dereq_("lppjwH"))
-},{"../package.json":64,"./adapters/backbone.js":8,"./context":10,"./cursor":11,"./router":12,"./subscription":13,"./token":14,"./valid":15,"assert":66,"debug":16,"events":72,"lppjwH":74,"mongodb-ns":4,"socket.io-client":18,"superagent":61,"util":90}],10:[function(_dereq_,module,exports){
+},{"../package.json":63,"./adapters/backbone.js":7,"./context":9,"./cursor":10,"./router":11,"./subscription":12,"./token":13,"./valid":14,"assert":65,"debug":15,"events":71,"lppjwH":73,"mongodb-ns":3,"socket.io-client":17,"superagent":60,"util":89}],9:[function(_dereq_,module,exports){
 (function (process){
 var util = _dereq_('util'),
   EventEmitter = _dereq_('events').EventEmitter,
@@ -1924,7 +1755,7 @@ Context.prototype.set = function(obj){
 };
 
 }).call(this,_dereq_("lppjwH"))
-},{"debug":16,"events":72,"lppjwH":74,"util":90}],11:[function(_dereq_,module,exports){
+},{"debug":15,"events":71,"lppjwH":73,"util":89}],10:[function(_dereq_,module,exports){
 var util = _dereq_('util'),
   stream = _dereq_('stream'),
   debug = _dereq_('debug')('mongoscope:client:cursor');
@@ -2008,7 +1839,7 @@ ClientCursor.prototype.moreInCurrentBatch = function () {
 
 module.exports = ClientCursor;
 
-},{"debug":16,"stream":88,"util":90}],12:[function(_dereq_,module,exports){
+},{"debug":15,"stream":87,"util":89}],11:[function(_dereq_,module,exports){
 // ## Stateful API
 //
 // Makes client apps so much simpler because they need extremely little domain
@@ -2073,7 +1904,7 @@ module.exports = function(def){
   };
 };
 
-},{}],13:[function(_dereq_,module,exports){
+},{}],12:[function(_dereq_,module,exports){
 var util = _dereq_('util'),
   stream = _dereq_('stream');
 
@@ -2150,7 +1981,7 @@ Subscription.prototype.close = function(){
     .emit(this.url + '/unsubscribe', this.payload);
 };
 
-},{"debug":16,"stream":88,"util":90}],14:[function(_dereq_,module,exports){
+},{"debug":15,"stream":87,"util":89}],13:[function(_dereq_,module,exports){
 (function (process){
 var request = _dereq_('superagent'),
   util = _dereq_('util'),
@@ -2254,7 +2085,7 @@ Token.prototype.schedule = function(){
 };
 
 }).call(this,_dereq_("lppjwH"))
-},{"debug":16,"events":72,"lppjwH":74,"superagent":61,"util":90}],15:[function(_dereq_,module,exports){
+},{"debug":15,"events":71,"lppjwH":73,"superagent":60,"util":89}],14:[function(_dereq_,module,exports){
 var types = {ns: _dereq_('mongodb-ns')};
 
 module.exports.ns = function(val){
@@ -2262,7 +2093,7 @@ module.exports.ns = function(val){
   return _ns.validDatabaseName && _ns.validCollectionName;
 };
 
-},{"mongodb-ns":4}],16:[function(_dereq_,module,exports){
+},{"mongodb-ns":3}],15:[function(_dereq_,module,exports){
 
 /**
  * Expose `debug()` as the module.
@@ -2401,7 +2232,7 @@ try {
   if (window.localStorage) debug.enable(localStorage.debug);
 } catch(e){}
 
-},{}],17:[function(_dereq_,module,exports){
+},{}],16:[function(_dereq_,module,exports){
 /*
  * Copyright (c) 2013 ObjectLabs Corporation
  * Distributed under the MIT license - http://opensource.org/licenses/MIT
@@ -2625,11 +2456,11 @@ var defaultParser = new MongodbUriParser();
     exports[f] = defaultParser[f].bind(defaultParser);
 });
 
-},{}],18:[function(_dereq_,module,exports){
+},{}],17:[function(_dereq_,module,exports){
 
 module.exports = _dereq_('./lib/');
 
-},{"./lib/":19}],19:[function(_dereq_,module,exports){
+},{"./lib/":18}],18:[function(_dereq_,module,exports){
 
 /**
  * Module dependencies.
@@ -2718,7 +2549,7 @@ exports.connect = lookup;
 exports.Manager = _dereq_('./manager');
 exports.Socket = _dereq_('./socket');
 
-},{"./manager":20,"./socket":22,"./url":23,"debug":26,"socket.io-parser":56}],20:[function(_dereq_,module,exports){
+},{"./manager":19,"./socket":21,"./url":22,"debug":25,"socket.io-parser":55}],19:[function(_dereq_,module,exports){
 
 /**
  * Module dependencies.
@@ -3176,7 +3007,7 @@ Manager.prototype.onreconnect = function(){
   this.emitAll('reconnect', attempt);
 };
 
-},{"./on":21,"./socket":22,"./url":23,"component-bind":24,"component-emitter":25,"debug":26,"engine.io-client":27,"object-component":53,"socket.io-parser":56}],21:[function(_dereq_,module,exports){
+},{"./on":20,"./socket":21,"./url":22,"component-bind":23,"component-emitter":24,"debug":25,"engine.io-client":26,"object-component":52,"socket.io-parser":55}],20:[function(_dereq_,module,exports){
 
 /**
  * Module exports.
@@ -3202,7 +3033,7 @@ function on(obj, ev, fn) {
   };
 }
 
-},{}],22:[function(_dereq_,module,exports){
+},{}],21:[function(_dereq_,module,exports){
 
 /**
  * Module dependencies.
@@ -3582,7 +3413,7 @@ Socket.prototype.disconnect = function(){
   return this;
 };
 
-},{"./on":21,"component-bind":24,"component-emitter":25,"debug":26,"has-binary-data":50,"indexof":52,"socket.io-parser":56,"to-array":60}],23:[function(_dereq_,module,exports){
+},{"./on":20,"component-bind":23,"component-emitter":24,"debug":25,"has-binary-data":49,"indexof":51,"socket.io-parser":55,"to-array":59}],22:[function(_dereq_,module,exports){
 (function (global){
 
 /**
@@ -3657,7 +3488,7 @@ function url(uri, loc){
 }
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"debug":26,"parseuri":54}],24:[function(_dereq_,module,exports){
+},{"debug":25,"parseuri":53}],23:[function(_dereq_,module,exports){
 /**
  * Slice reference.
  */
@@ -3682,7 +3513,7 @@ module.exports = function(obj, fn){
   }
 };
 
-},{}],25:[function(_dereq_,module,exports){
+},{}],24:[function(_dereq_,module,exports){
 
 /**
  * Expose `Emitter`.
@@ -3848,13 +3679,13 @@ Emitter.prototype.hasListeners = function(event){
   return !! this.listeners(event).length;
 };
 
+},{}],25:[function(_dereq_,module,exports){
+module.exports=_dereq_(15)
 },{}],26:[function(_dereq_,module,exports){
-module.exports=_dereq_(16)
-},{}],27:[function(_dereq_,module,exports){
 
 module.exports =  _dereq_('./lib/');
 
-},{"./lib/":28}],28:[function(_dereq_,module,exports){
+},{"./lib/":27}],27:[function(_dereq_,module,exports){
 
 module.exports = _dereq_('./socket');
 
@@ -3866,7 +3697,7 @@ module.exports = _dereq_('./socket');
  */
 module.exports.parser = _dereq_('engine.io-parser');
 
-},{"./socket":29,"engine.io-parser":38}],29:[function(_dereq_,module,exports){
+},{"./socket":28,"engine.io-parser":37}],28:[function(_dereq_,module,exports){
 (function (global){
 /**
  * Module dependencies.
@@ -4497,7 +4328,7 @@ Socket.prototype.filterUpgrades = function (upgrades) {
 };
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./transport":30,"./transports":31,"component-emitter":25,"debug":26,"engine.io-parser":38,"indexof":52,"parsejson":47,"parseqs":48,"parseuri":54}],30:[function(_dereq_,module,exports){
+},{"./transport":29,"./transports":30,"component-emitter":24,"debug":25,"engine.io-parser":37,"indexof":51,"parsejson":46,"parseqs":47,"parseuri":53}],29:[function(_dereq_,module,exports){
 /**
  * Module dependencies.
  */
@@ -4653,7 +4484,7 @@ Transport.prototype.onClose = function () {
   this.emit('close');
 };
 
-},{"component-emitter":25,"engine.io-parser":38}],31:[function(_dereq_,module,exports){
+},{"component-emitter":24,"engine.io-parser":37}],30:[function(_dereq_,module,exports){
 (function (global){
 /**
  * Module dependencies
@@ -4705,7 +4536,7 @@ function polling(opts){
 }
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./polling-jsonp":32,"./polling-xhr":33,"./websocket":35,"xmlhttprequest":36}],32:[function(_dereq_,module,exports){
+},{"./polling-jsonp":31,"./polling-xhr":32,"./websocket":34,"xmlhttprequest":35}],31:[function(_dereq_,module,exports){
 (function (global){
 
 /**
@@ -4941,7 +4772,7 @@ JSONPPolling.prototype.doWrite = function (data, fn) {
 };
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./polling":34,"component-inherit":37}],33:[function(_dereq_,module,exports){
+},{"./polling":33,"component-inherit":36}],32:[function(_dereq_,module,exports){
 (function (global){
 /**
  * Module requirements.
@@ -5255,7 +5086,7 @@ function unloadHandler() {
 }
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./polling":34,"component-emitter":25,"component-inherit":37,"debug":26,"xmlhttprequest":36}],34:[function(_dereq_,module,exports){
+},{"./polling":33,"component-emitter":24,"component-inherit":36,"debug":25,"xmlhttprequest":35}],33:[function(_dereq_,module,exports){
 /**
  * Module dependencies.
  */
@@ -5502,7 +5333,7 @@ Polling.prototype.uri = function(){
   return schema + '://' + this.hostname + port + this.path + query;
 };
 
-},{"../transport":30,"component-inherit":37,"debug":26,"engine.io-parser":38,"parseqs":48,"xmlhttprequest":36}],35:[function(_dereq_,module,exports){
+},{"../transport":29,"component-inherit":36,"debug":25,"engine.io-parser":37,"parseqs":47,"xmlhttprequest":35}],34:[function(_dereq_,module,exports){
 /**
  * Module dependencies.
  */
@@ -5733,7 +5564,7 @@ WS.prototype.check = function(){
   return !!WebSocket && !('__initialize' in WebSocket && this.name === WS.prototype.name);
 };
 
-},{"../transport":30,"component-inherit":37,"debug":26,"engine.io-parser":38,"parseqs":48,"ws":49}],36:[function(_dereq_,module,exports){
+},{"../transport":29,"component-inherit":36,"debug":25,"engine.io-parser":37,"parseqs":47,"ws":48}],35:[function(_dereq_,module,exports){
 // browser shim for xmlhttprequest module
 var hasCORS = _dereq_('has-cors');
 
@@ -5754,7 +5585,7 @@ module.exports = function(opts) {
   }
 }
 
-},{"has-cors":45}],37:[function(_dereq_,module,exports){
+},{"has-cors":44}],36:[function(_dereq_,module,exports){
 
 module.exports = function(a, b){
   var fn = function(){};
@@ -5762,7 +5593,7 @@ module.exports = function(a, b){
   a.prototype = new fn;
   a.prototype.constructor = a;
 };
-},{}],38:[function(_dereq_,module,exports){
+},{}],37:[function(_dereq_,module,exports){
 (function (global){
 /**
  * Module dependencies.
@@ -6309,7 +6140,7 @@ exports.decodePayloadAsBinary = function (data, binaryType, callback) {
 };
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./keys":39,"after":40,"arraybuffer.slice":41,"base64-arraybuffer":42,"blob":43,"utf8":44}],39:[function(_dereq_,module,exports){
+},{"./keys":38,"after":39,"arraybuffer.slice":40,"base64-arraybuffer":41,"blob":42,"utf8":43}],38:[function(_dereq_,module,exports){
 
 /**
  * Gets the keys for an object.
@@ -6330,7 +6161,7 @@ module.exports = Object.keys || function keys (obj){
   return arr;
 };
 
-},{}],40:[function(_dereq_,module,exports){
+},{}],39:[function(_dereq_,module,exports){
 module.exports = after
 
 function after(count, callback, err_cb) {
@@ -6360,7 +6191,7 @@ function after(count, callback, err_cb) {
 
 function noop() {}
 
-},{}],41:[function(_dereq_,module,exports){
+},{}],40:[function(_dereq_,module,exports){
 /**
  * An abstraction for slicing an arraybuffer even when
  * ArrayBuffer.prototype.slice is not supported
@@ -6391,7 +6222,7 @@ module.exports = function(arraybuffer, start, end) {
   return result.buffer;
 };
 
-},{}],42:[function(_dereq_,module,exports){
+},{}],41:[function(_dereq_,module,exports){
 /*
  * base64-arraybuffer
  * https://github.com/niklasvh/base64-arraybuffer
@@ -6452,7 +6283,7 @@ module.exports = function(arraybuffer, start, end) {
   };
 })("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
 
-},{}],43:[function(_dereq_,module,exports){
+},{}],42:[function(_dereq_,module,exports){
 (function (global){
 /**
  * Create a blob builder even when vendor prefixes exist
@@ -6505,7 +6336,7 @@ module.exports = (function() {
 })();
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],44:[function(_dereq_,module,exports){
+},{}],43:[function(_dereq_,module,exports){
 (function (global){
 /*! http://mths.be/utf8js v2.0.0 by @mathias */
 ;(function(root) {
@@ -6748,7 +6579,7 @@ module.exports = (function() {
 }(this));
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],45:[function(_dereq_,module,exports){
+},{}],44:[function(_dereq_,module,exports){
 
 /**
  * Module dependencies.
@@ -6773,7 +6604,7 @@ try {
   module.exports = false;
 }
 
-},{"global":46}],46:[function(_dereq_,module,exports){
+},{"global":45}],45:[function(_dereq_,module,exports){
 
 /**
  * Returns `this`. Execute this without a "context" (i.e. without it being
@@ -6783,7 +6614,7 @@ try {
 
 module.exports = (function () { return this; })();
 
-},{}],47:[function(_dereq_,module,exports){
+},{}],46:[function(_dereq_,module,exports){
 (function (global){
 /**
  * JSON parse.
@@ -6818,7 +6649,7 @@ module.exports = function parsejson(data) {
   }
 };
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],48:[function(_dereq_,module,exports){
+},{}],47:[function(_dereq_,module,exports){
 /**
  * Compiles a querystring
  * Returns string representation of the object
@@ -6857,7 +6688,7 @@ exports.decode = function(qs){
   return qry;
 };
 
-},{}],49:[function(_dereq_,module,exports){
+},{}],48:[function(_dereq_,module,exports){
 
 /**
  * Module dependencies.
@@ -6902,7 +6733,7 @@ function ws(uri, protocols, opts) {
 
 if (WebSocket) ws.prototype = WebSocket.prototype;
 
-},{}],50:[function(_dereq_,module,exports){
+},{}],49:[function(_dereq_,module,exports){
 (function (global,Buffer){
 /*
  * Module requirements.
@@ -6963,12 +6794,12 @@ function hasBinary(data) {
 }
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer)
-},{"buffer":69,"isarray":51}],51:[function(_dereq_,module,exports){
+},{"buffer":68,"isarray":50}],50:[function(_dereq_,module,exports){
 module.exports = Array.isArray || function (arr) {
   return Object.prototype.toString.call(arr) == '[object Array]';
 };
 
-},{}],52:[function(_dereq_,module,exports){
+},{}],51:[function(_dereq_,module,exports){
 
 var indexOf = [].indexOf;
 
@@ -6979,7 +6810,7 @@ module.exports = function(arr, obj){
   }
   return -1;
 };
-},{}],53:[function(_dereq_,module,exports){
+},{}],52:[function(_dereq_,module,exports){
 
 /**
  * HOP ref.
@@ -7064,7 +6895,7 @@ exports.length = function(obj){
 exports.isEmpty = function(obj){
   return 0 == exports.length(obj);
 };
-},{}],54:[function(_dereq_,module,exports){
+},{}],53:[function(_dereq_,module,exports){
 /**
  * Parses an URI
  *
@@ -7091,7 +6922,7 @@ module.exports = function parseuri(str) {
   return uri;
 };
 
-},{}],55:[function(_dereq_,module,exports){
+},{}],54:[function(_dereq_,module,exports){
 (function (global,Buffer){
 /**
  * Modle requirements
@@ -7247,7 +7078,7 @@ function isBuf(obj) {
 }
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer)
-},{"buffer":69,"isarray":58}],56:[function(_dereq_,module,exports){
+},{"buffer":68,"isarray":57}],55:[function(_dereq_,module,exports){
 (function (global,Buffer){
 
 /**
@@ -7635,7 +7466,7 @@ function error(data){
 }
 
 }).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer)
-},{"./binary":55,"buffer":69,"debug":26,"emitter":57,"isarray":58,"json3":59}],57:[function(_dereq_,module,exports){
+},{"./binary":54,"buffer":68,"debug":25,"emitter":56,"isarray":57,"json3":58}],56:[function(_dereq_,module,exports){
 
 /**
  * Module dependencies.
@@ -7799,9 +7630,9 @@ Emitter.prototype.hasListeners = function(event){
   return !! this.listeners(event).length;
 };
 
-},{"indexof":52}],58:[function(_dereq_,module,exports){
-module.exports=_dereq_(51)
-},{}],59:[function(_dereq_,module,exports){
+},{"indexof":51}],57:[function(_dereq_,module,exports){
+module.exports=_dereq_(50)
+},{}],58:[function(_dereq_,module,exports){
 /*! JSON v3.2.6 | http://bestiejs.github.io/json3 | Copyright 2012-2013, Kit Cambridge | http://kit.mit-license.org */
 ;(function (window) {
   // Convenience aliases.
@@ -8664,7 +8495,7 @@ module.exports=_dereq_(51)
   }
 }(this));
 
-},{}],60:[function(_dereq_,module,exports){
+},{}],59:[function(_dereq_,module,exports){
 module.exports = toArray
 
 function toArray(list, index) {
@@ -8679,7 +8510,7 @@ function toArray(list, index) {
     return array
 }
 
-},{}],61:[function(_dereq_,module,exports){
+},{}],60:[function(_dereq_,module,exports){
 /**
  * Module dependencies.
  */
@@ -9685,7 +9516,7 @@ request.put = function(url, data, fn){
 
 module.exports = request;
 
-},{"emitter":62,"reduce":63}],62:[function(_dereq_,module,exports){
+},{"emitter":61,"reduce":62}],61:[function(_dereq_,module,exports){
 
 /**
  * Expose `Emitter`.
@@ -9843,7 +9674,7 @@ Emitter.prototype.hasListeners = function(event){
   return !! this.listeners(event).length;
 };
 
-},{}],63:[function(_dereq_,module,exports){
+},{}],62:[function(_dereq_,module,exports){
 
 /**
  * Reduce `arr` with `fn`.
@@ -9868,7 +9699,7 @@ module.exports = function(arr, fn, initial){
   
   return curr;
 };
-},{}],64:[function(_dereq_,module,exports){
+},{}],63:[function(_dereq_,module,exports){
 module.exports={
   "name": "mongoscope-client",
   "description": "shush",
@@ -9925,7 +9756,7 @@ module.exports={
   "_resolved": "https://registry.npmjs.org/mongoscope-client/-/mongoscope-client-0.1.2.tgz"
 }
 
-},{}],65:[function(_dereq_,module,exports){
+},{}],64:[function(_dereq_,module,exports){
 //     Underscore.js 1.6.0
 //     http://underscorejs.org
 //     (c) 2009-2014 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
@@ -11270,7 +11101,7 @@ module.exports={
   }
 }).call(this);
 
-},{}],66:[function(_dereq_,module,exports){
+},{}],65:[function(_dereq_,module,exports){
 // http://wiki.commonjs.org/wiki/Unit_Testing/1.0
 //
 // THIS IS NOT TESTED NOR LIKELY TO WORK OUTSIDE V8!
@@ -11632,14 +11463,14 @@ var objectKeys = Object.keys || function (obj) {
   return keys;
 };
 
-},{"util/":68}],67:[function(_dereq_,module,exports){
+},{"util/":67}],66:[function(_dereq_,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],68:[function(_dereq_,module,exports){
+},{}],67:[function(_dereq_,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -12229,7 +12060,7 @@ function hasOwnProperty(obj, prop) {
 }
 
 }).call(this,_dereq_("lppjwH"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":67,"inherits":73,"lppjwH":74}],69:[function(_dereq_,module,exports){
+},{"./support/isBuffer":66,"inherits":72,"lppjwH":73}],68:[function(_dereq_,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -13380,7 +13211,7 @@ function assert (test, message) {
   if (!test) throw new Error(message || 'Failed assertion')
 }
 
-},{"base64-js":70,"ieee754":71}],70:[function(_dereq_,module,exports){
+},{"base64-js":69,"ieee754":70}],69:[function(_dereq_,module,exports){
 var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 ;(function (exports) {
@@ -13502,7 +13333,7 @@ var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 	exports.fromByteArray = uint8ToBase64
 }(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
 
-},{}],71:[function(_dereq_,module,exports){
+},{}],70:[function(_dereq_,module,exports){
 exports.read = function(buffer, offset, isLE, mLen, nBytes) {
   var e, m,
       eLen = nBytes * 8 - mLen - 1,
@@ -13588,7 +13419,7 @@ exports.write = function(buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128;
 };
 
-},{}],72:[function(_dereq_,module,exports){
+},{}],71:[function(_dereq_,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -13893,7 +13724,7 @@ function isUndefined(arg) {
   return arg === void 0;
 }
 
-},{}],73:[function(_dereq_,module,exports){
+},{}],72:[function(_dereq_,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -13918,7 +13749,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],74:[function(_dereq_,module,exports){
+},{}],73:[function(_dereq_,module,exports){
 // shim for using process in browser
 
 var process = module.exports = {};
@@ -13983,10 +13814,10 @@ process.chdir = function (dir) {
     throw new Error('process.chdir is not supported');
 };
 
-},{}],75:[function(_dereq_,module,exports){
+},{}],74:[function(_dereq_,module,exports){
 module.exports = _dereq_("./lib/_stream_duplex.js")
 
-},{"./lib/_stream_duplex.js":76}],76:[function(_dereq_,module,exports){
+},{"./lib/_stream_duplex.js":75}],75:[function(_dereq_,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -14079,7 +13910,7 @@ function forEach (xs, f) {
 }
 
 }).call(this,_dereq_("lppjwH"))
-},{"./_stream_readable":78,"./_stream_writable":80,"core-util-is":81,"inherits":73,"lppjwH":74}],77:[function(_dereq_,module,exports){
+},{"./_stream_readable":77,"./_stream_writable":79,"core-util-is":80,"inherits":72,"lppjwH":73}],76:[function(_dereq_,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -14127,7 +13958,7 @@ PassThrough.prototype._transform = function(chunk, encoding, cb) {
   cb(null, chunk);
 };
 
-},{"./_stream_transform":79,"core-util-is":81,"inherits":73}],78:[function(_dereq_,module,exports){
+},{"./_stream_transform":78,"core-util-is":80,"inherits":72}],77:[function(_dereq_,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -15090,7 +14921,7 @@ function indexOf (xs, x) {
 }
 
 }).call(this,_dereq_("lppjwH"))
-},{"buffer":69,"core-util-is":81,"events":72,"inherits":73,"isarray":82,"lppjwH":74,"stream":88,"string_decoder/":83}],79:[function(_dereq_,module,exports){
+},{"buffer":68,"core-util-is":80,"events":71,"inherits":72,"isarray":81,"lppjwH":73,"stream":87,"string_decoder/":82}],78:[function(_dereq_,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -15302,7 +15133,7 @@ function done(stream, er) {
   return stream.push(null);
 }
 
-},{"./_stream_duplex":76,"core-util-is":81,"inherits":73}],80:[function(_dereq_,module,exports){
+},{"./_stream_duplex":75,"core-util-is":80,"inherits":72}],79:[function(_dereq_,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -15693,7 +15524,7 @@ function endWritable(stream, state, cb) {
 }
 
 }).call(this,_dereq_("lppjwH"))
-},{"./_stream_duplex":76,"buffer":69,"core-util-is":81,"inherits":73,"lppjwH":74,"stream":88}],81:[function(_dereq_,module,exports){
+},{"./_stream_duplex":75,"buffer":68,"core-util-is":80,"inherits":72,"lppjwH":73,"stream":87}],80:[function(_dereq_,module,exports){
 (function (Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -15803,9 +15634,9 @@ function objectToString(o) {
   return Object.prototype.toString.call(o);
 }
 }).call(this,_dereq_("buffer").Buffer)
-},{"buffer":69}],82:[function(_dereq_,module,exports){
-module.exports=_dereq_(51)
-},{}],83:[function(_dereq_,module,exports){
+},{"buffer":68}],81:[function(_dereq_,module,exports){
+module.exports=_dereq_(50)
+},{}],82:[function(_dereq_,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -16007,10 +15838,10 @@ function base64DetectIncompleteChar(buffer) {
   return incomplete;
 }
 
-},{"buffer":69}],84:[function(_dereq_,module,exports){
+},{"buffer":68}],83:[function(_dereq_,module,exports){
 module.exports = _dereq_("./lib/_stream_passthrough.js")
 
-},{"./lib/_stream_passthrough.js":77}],85:[function(_dereq_,module,exports){
+},{"./lib/_stream_passthrough.js":76}],84:[function(_dereq_,module,exports){
 exports = module.exports = _dereq_('./lib/_stream_readable.js');
 exports.Readable = exports;
 exports.Writable = _dereq_('./lib/_stream_writable.js');
@@ -16018,13 +15849,13 @@ exports.Duplex = _dereq_('./lib/_stream_duplex.js');
 exports.Transform = _dereq_('./lib/_stream_transform.js');
 exports.PassThrough = _dereq_('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":76,"./lib/_stream_passthrough.js":77,"./lib/_stream_readable.js":78,"./lib/_stream_transform.js":79,"./lib/_stream_writable.js":80}],86:[function(_dereq_,module,exports){
+},{"./lib/_stream_duplex.js":75,"./lib/_stream_passthrough.js":76,"./lib/_stream_readable.js":77,"./lib/_stream_transform.js":78,"./lib/_stream_writable.js":79}],85:[function(_dereq_,module,exports){
 module.exports = _dereq_("./lib/_stream_transform.js")
 
-},{"./lib/_stream_transform.js":79}],87:[function(_dereq_,module,exports){
+},{"./lib/_stream_transform.js":78}],86:[function(_dereq_,module,exports){
 module.exports = _dereq_("./lib/_stream_writable.js")
 
-},{"./lib/_stream_writable.js":80}],88:[function(_dereq_,module,exports){
+},{"./lib/_stream_writable.js":79}],87:[function(_dereq_,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -16153,10 +15984,10 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":72,"inherits":73,"readable-stream/duplex.js":75,"readable-stream/passthrough.js":84,"readable-stream/readable.js":85,"readable-stream/transform.js":86,"readable-stream/writable.js":87}],89:[function(_dereq_,module,exports){
+},{"events":71,"inherits":72,"readable-stream/duplex.js":74,"readable-stream/passthrough.js":83,"readable-stream/readable.js":84,"readable-stream/transform.js":85,"readable-stream/writable.js":86}],88:[function(_dereq_,module,exports){
+module.exports=_dereq_(66)
+},{}],89:[function(_dereq_,module,exports){
 module.exports=_dereq_(67)
-},{}],90:[function(_dereq_,module,exports){
-module.exports=_dereq_(68)
-},{"./support/isBuffer":89,"inherits":73,"lppjwH":74}]},{},[1])
+},{"./support/isBuffer":88,"inherits":72,"lppjwH":73}]},{},[1])
 (1)
 });
