@@ -1,1 +1,1 @@
-var QueryBuilder = module.exports = require('./lib/mongodb-querybuilder.js');
+module.exports = require('./lib');

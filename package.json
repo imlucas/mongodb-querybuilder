@@ -1,47 +1,21 @@
 {
   "name": "mongodb-querybuilder",
-  "description": "A wrapper of queries and aggregation calls to MongoDB via the mongoscope client",
-  "version": "0.0.2",
-  "author": "Thomas Rueckstiess <thomas@rueckstiess.net>",
-  "license": "Apache",
-  "homepage": "http://github.com/rueckstiess/mongodb-querybuilder",
+  "description": "MongoDB aggregation pipeline DSL",
+  "version": "0.1.0",
   "dependencies": {
-    "backbone": "^1.1.2",
-    "debug": "^1.0.3",
-    "mongodb-ns": "0.0.4",
-    "mongodb-schema": ">=0.0.4",
-    "mongoscope-client": "^0.1.2",
-    "underscore": "^1.6.0"
+    "debug": "^1.0.4"
   },
-  "devDependencies": {
-    "browserify": "^4.1.6",
-    "ecstatic": "^0.5.3",
-    "github-release": "^0.0.2",
-    "gulp": "^3.8.1",
-    "gulp-rename": "^1.2.0",
-    "vinyl-source-stream": "^0.1.1",
-    "zuul": "^1.7.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git://github.com/rueckstiess/mongodb-querybuilder.git"
-  },
-  "bugs": {
-    "url": "https://github.com/rueckstiess/mongodb-querybuilder/issues"
-  },
-  "main": "index.js",
   "scripts": {
-    "start": "gulp",
-    "dist": "gulp dist",
-    "test": "zuul --local 8080 -- test/*.test.js",
-    "ci": "zuul -- test/*.test.js"
+    "test": "mocha"
   },
   "keywords": [
     "mongodb",
     "mongodb.js",
     "mongoscope",
-    "query",
-    "builder",
+    "querybuilder",
     "aggregation"
-  ]
+  ],
+  "devDependencies": {
+    "mocha": "^1.21.4"
+  }
 }

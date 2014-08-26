@@ -1,6 +1,8 @@
 # mongodb-querybuilder
 
-MongoDB query builder for aggregations
+[![build status](https://secure.travis-ci.org/imlucas/mongodb-ns.png)](http://travis-ci.org/imlucas/mongodb-ns)
+
+MongoDB aggregation pipeline DSL.
 
 ## Install
 
@@ -14,28 +16,37 @@ npm install
 npm test
 ```
 
-And then open [http://localhost:8080/__zuul](http://localhost:8080/__zuul) in a browser.
-
-## Dist
-
-Of course the preferred way to use -querybuilder is npm+browserify, but sometimes
-being able to just drop a script tag into a codepen is nedded.
-
-1. Create a [GitHub Access Token](https://help.github.com/articles/creating-an-access-token-for-command-line-use)
-1. Export your access token as `GITHUB_TOKEN={{YOUR TOKEN}}`
-1. `npm run-script dist`
-
 ## Todo
 
-- [ ] Setup travis for saucelabs.  see [zuul docs](https://github.com/defunctzombie/zuul/wiki/travis-ci)
-- [ ] Write lots more tests
+- [ ] Write lots of tests
 
 ## Example
 
-The query builder turns that:
+```javascript
+var scope = require('mongoscope-client')(),
+    detectSchema = require('mongodb-schema').schema,
+    query = require('mongodb-querybuilder');
 
-```js
-builder
+var ns = 'mydb.mycollection';
+
+function getSchema(fn){
+  if(query.schema(ns)) return process.nextTick(fn);
+
+  scope.sample(ns, {}, function(err, docs){
+    if (err) return fn(err);
+
+    detectSchema(docs, {flat: true}, function(err, schema){
+      if (err) return fn(err);
+      query.schema(ns, schema);
+      fn();
+    });
+  });
+}
+
+getSchema(function(err){
+  if(err) return console.error(err);
+
+  var pipeline = query(ns)
     .match("fields.reporter.name", ["thomasr", "ramon.fernandez", "spencer"])
     .match("fields.components.name", ["Security", "Sharding"])
     .match("changelog.total", [10, 50])
@@ -43,10 +54,23 @@ builder
         .agg("y-axis", "$sum", 1)
         .agg("size", "$avg", "changelog.total")
         .agg("_ids", "$push", "_id")
-    .limit(5);
+    .limit(5)
+    .pipeline();
+
+  console.log('Running aggregation with pipeline', pipeline);
+
+  scope.aggregation(ns, pipeline, function(err, docs){
+    if(err) return console.error('could not run aggregation', err);
+
+    console.log('Aggregation results:');
+    docs.map(function(doc){
+      console.log(' - ', doc);
+    });
+  });
+});
 ```
 
-into that:
+Which runs the aggregation pipeline:
 
 ```json
 [
